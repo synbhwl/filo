@@ -1,10 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse
-from sqlmodel import SQLModel, create_engine, Session, Field
+from sqlmodel import SQLModel, create_engine, Session, Field, select
 import uuid
 import os
 from datetime import datetime
 from typing import Optional
+import jwt
+from pydantic import BaseModel
+from passlib.hash import pbkdf2_sha256
 
 allowed_types= ['.txt', '.md','.pdf','.jpg','.jpeg','.png', '.gif']
 
@@ -17,6 +20,17 @@ class File_from_user(SQLModel, table=True):
 	extension: str = Field(nullable=False)
 	timestamp: str
 	
+class User(SQLModel, table=True):
+	id: Optional[int] = Field(default=None, primary_key=True)
+	username: str = Field(unique=True, index=True, nullable=False)
+	password: str = Field(nullable=False)
+	user_id: Optional[str] = Field(nullable=False, default=None)
+
+
+class User_from_req(BaseModel):
+	username: str
+	plain_pass: str
+
 
 engine = create_engine('sqlite:///data.db')
 SQLModel.metadata.create_all(engine)
@@ -27,6 +41,39 @@ def create_session():
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@app.post('/register')
+async def register_user(user:User_from_req, session:Session = Depends(create_session)):
+	username = user.username
+	plain_pass = user.plain_pass
+
+	if not username:
+		raise HTTPException(status_code=400, detail="username missing")
+	if len(username) >20:
+		raise HTTPException(status_code=400, detail="username too long. keep under 50 char")
+	if not plain_pass or len(plain_pass)<8:
+		raise HTTPException(status_code=400, detail="password missing or invalid password. Password should be atleast 8 char long.")
+
+	
+	user_exists = session.exec(select(User).where(User.username == username)).first()
+	if user_exists:
+		raise HTTPException(status_code=400, detail="username already exists")
+
+	
+	hashed_pass = pbkdf2_sha256.hash(plain_pass)
+
+	new_user = User(username = username, password = hashed_pass, user_id= str(uuid.uuid4()))
+
+	try:
+		session.add(new_user)
+		session.commit()
+		session.refresh(new_user)
+	except Exception as e:
+		raise HTTPException(status_code=500, detail="error while adding user to database")
+		
+	return {"message":"user registered successfully"}
+
 
 @app.post('/upload')
 async def upload_files(file: UploadFile = File(...), session: Session = Depends(create_session)):
@@ -56,7 +103,7 @@ async def upload_files(file: UploadFile = File(...), session: Session = Depends(
 	with open(file_path, 'wb') as buffer:
 		buffer.write(await file.read())
 
-	return {"filename":unique_name}
+	return {"filename":unique_name, "message":"please copy/store this unique filename, since you'll need to use this to retrieve your file"}
 
 @app.get('/file/{filename}')
 async def download_file(filename: str):
