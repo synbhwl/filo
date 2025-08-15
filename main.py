@@ -8,10 +8,21 @@ from typing import Optional
 import jwt
 from pydantic import BaseModel
 from passlib.hash import pbkdf2_sha256
+from dotenv import load_dotenv
+import logging
 
 allowed_types= ['.txt', '.md','.pdf','.jpg','.jpeg','.png', '.gif']
 
 app = FastAPI()
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+secret= os.getenv('SECRET').strip()
+if not secret:
+	logger.error('secret missing in env variables')
 
 class File_from_user(SQLModel, table=True):
 	id: Optional[int] = Field(default=None, primary_key=True)
@@ -70,9 +81,40 @@ async def register_user(user:User_from_req, session:Session = Depends(create_ses
 		session.commit()
 		session.refresh(new_user)
 	except Exception as e:
-		raise HTTPException(status_code=500, detail="error while adding user to database")
+		raise HTTPException(status_code=500, detail=f"error while adding user to database: {str(e)}")
 		
 	return {"message":"user registered successfully"}
+
+
+@app.post('/login')
+async def login_user(user: User_from_req, session:Session = Depends(create_session)):
+	username = user.username
+	plain_pass = user.plain_pass
+
+	if not username:
+		raise HTTPException(status_code=400, detail="username missing")
+	if len(username) >20:
+		raise HTTPException(status_code=400, detail="username too long. keep under 50 char")
+	if not plain_pass or len(plain_pass)<8:
+		raise HTTPException(status_code=400, detail="password missing or invalid password. Password should be atleast 8 char long.")
+
+	try:
+		user_in_db = session.exec(select(User).where(User.username == username)).first()
+		if not user_in_db:
+			raise HTTPException(status_code=404, detail='cannot log in, user not found in database')
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"error while fetching user from database: {str(e)}")
+
+	ismatched = pbkdf2_sha256.verify(plain_pass, user_in_db.password)
+
+	if not ismatched:
+		raise HTTPException(status_code=403, detail="cannot log in user: username or password wrong")
+
+	payload = {'username':username}
+	token = jwt.encode(payload, secret, algorithm='HS256')
+
+	return {'message':'user logged in successfully', 'token':token}
+
 
 
 @app.post('/upload')
@@ -98,7 +140,7 @@ async def upload_files(file: UploadFile = File(...), session: Session = Depends(
 		session.commit()
 		session.refresh(new_file)
 	except Exception as e:
-		raise HTTPException(status_code=500, detail="err: error while uploading file metadata to database")
+		raise HTTPException(status_code=500, detail=f"err: error while uploading file metadata to database: {str(e)}")
 
 	with open(file_path, 'wb') as buffer:
 		buffer.write(await file.read())

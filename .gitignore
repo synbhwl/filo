@@ -4,3 +4,4 @@ docs/
 venv/
 data.db
 *.swp
+.env
