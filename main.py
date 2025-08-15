@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from passlib.hash import pbkdf2_sha256
 from dotenv import load_dotenv
 import logging
+from fastapi.security import OAuth2PasswordBearer
 
 allowed_types= ['.txt', '.md','.pdf','.jpg','.jpeg','.png', '.gif']
 
@@ -53,6 +54,20 @@ def create_session():
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+token = OAuth2PasswordBearer(tokenUrl = 'login')
+def get_current_user(token: str = Depends(token), session:Session = Depends(create_session)):
+	if not token:
+		raise HTTPException(status_code=400, detail='token missing from auth header')
+	try:
+		payload = jwt.decode(token, secret, algorithms='HS256')	
+	except Exception as e:
+		raise HTTPException(status_code=400, detail='invalid token')
+	username = payload['username']
+	current_user = session.exec(select(User).where(User.username == username)).first()
+	if not current_user:
+		raise HTTPException(status_code=404, detail='cannot authenticate, user not found')
+	return current_user
+	
 
 @app.post('/register')
 async def register_user(user:User_from_req, session:Session = Depends(create_session)):
@@ -161,4 +176,6 @@ async def download_file(filename: str):
 	
 	return FileResponse(file_path, media_type=file.content_type, filename=filename)
 
-
+@app.get('/protected')
+def protected(user: User = Depends(get_current_user)):
+	return {'user':user.username}
